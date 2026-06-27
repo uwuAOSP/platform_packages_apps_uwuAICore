@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (C) 2026 The uwuAOSP Project
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+-->
+<resources>
+    <string name="app_name">uwuAI Core</string>
+    <string name="ai_settings_title">AI</string>
+    <string name="ai_log_initial">No model selected.</string>
+    <string name="ai_log_model_selected">Model selected: %1$s</string>
+    <string name="ai_log_model_preparing">Preparing local model file: %1$s</string>
+    <string name="ai_log_model_loading">Loading model: %1$s</string>
+    <string name="ai_log_model_ready">Model loaded. Ready.</string>
+    <string name="ai_log_model_stopped">Model stopped.</string>
+    <string name="ai_log_vulkan_requested">Vulkan requested.</string>
+    <string name="ai_log_vulkan_disabled">Vulkan disabled; CPU backend selected.</string>
+    <string name="ai_log_invalid_model">Selected file is not a GGUF model.</string>
+    <string name="ai_log_error">Error: %1$s</string>
+    <string name="ai_log_user_prefix">You</string>
+    <string name="ai_log_assistant_prefix">Assistant</string>
+    <string name="ai_message_hint">Message</string>
+    <string name="ai_vulkan_gpu">Vulkan GPU</string>
+    <string name="ai_action_select_model">Select model</string>
+    <string name="ai_action_run_model">Run model</string>
+    <string name="ai_action_stop_model">Stop model</string>
+    <string name="ai_action_send">Send</string>
+</resources>

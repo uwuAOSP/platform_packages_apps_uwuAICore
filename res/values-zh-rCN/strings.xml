@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (C) 2026 The uwuAOSP Project
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+-->
+<resources>
+    <string name="app_name">uwuAI Core</string>
+    <string name="ai_settings_title">AI</string>
+    <string name="ai_log_initial">尚未选择模型。</string>
+    <string name="ai_log_model_selected">已选择模型：%1$s</string>
+    <string name="ai_log_model_preparing">正在准备本地模型文件：%1$s</string>
+    <string name="ai_log_model_loading">正在加载模型：%1$s</string>
+    <string name="ai_log_model_ready">模型已加载，已就绪。</string>
+    <string name="ai_log_model_stopped">模型已停止。</string>
+    <string name="ai_log_vulkan_requested">已请求 Vulkan。</string>
+    <string name="ai_log_vulkan_disabled">Vulkan 已关闭，使用 CPU 后端。</string>
+    <string name="ai_log_invalid_model">选择的文件不是 GGUF 模型。</string>
+    <string name="ai_log_error">错误：%1$s</string>
+    <string name="ai_log_user_prefix">你</string>
+    <string name="ai_log_assistant_prefix">助手</string>
+    <string name="ai_message_hint">消息</string>
+    <string name="ai_vulkan_gpu">Vulkan GPU</string>
+    <string name="ai_action_select_model">选择模型</string>
+    <string name="ai_action_run_model">运行模型</string>
+    <string name="ai_action_stop_model">停止模型</string>
+    <string name="ai_action_send">发送</string>
+</resources>

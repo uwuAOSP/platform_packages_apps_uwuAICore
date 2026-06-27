@@ -1,0 +1,112 @@
+//
+// Copyright (C) 2026 The uwuAOSP Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+android_app {
+    name: "uwuAICore",
+
+    srcs: [
+        "src/**/*.kt",
+    ],
+    resource_dirs: ["res"],
+    manifest: "AndroidManifest.xml",
+
+    platform_apis: true,
+    system_ext_specific: true,
+    certificate: "platform",
+    privileged: true,
+    jni_libs: ["libuwu_aicore_llama_jni"],
+
+    static_libs: [
+        "androidx.activity_activity",
+        "androidx.activity_activity-compose",
+        "androidx.compose.foundation_foundation",
+        "androidx.compose.foundation_foundation-layout",
+        "androidx.compose.material3_material3",
+        "androidx.compose.material_material-icons-extended",
+        "androidx.compose.runtime_runtime",
+        "androidx.compose.ui_ui",
+        "androidx.compose.ui_ui-graphics",
+        "androidx.core_core-ktx",
+        "kotlin-stdlib",
+        "SettingsLib",
+        "uwuComposeSettingsLib",
+        "kotlinx_coroutines",
+        "kotlinx_coroutines_android",
+    ],
+
+    kotlincflags: ["-Xjvm-default=all"],
+
+    optimize: {
+        optimize: true,
+        proguard_flags_files: ["proguard-rules.pro"],
+        shrink_resources: true,
+    },
+}
+
+cc_library_shared {
+    name: "libuwu_aicore_llama_jni",
+    srcs: ["jni/uwu_llama_jni.cpp"],
+    system_ext_specific: true,
+    compile_multilib: "64",
+    cpp_std: "c++17",
+    rtti: true,
+    lto: {
+        never: true,
+    },
+    cflags: [
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=600",
+        "-DGGML_USE_CPU",
+        "-DGGML_USE_VULKAN",
+        "-DGGML_VULKAN_COOPMAT_GLSLC_SUPPORT",
+        "-DGGML_VULKAN_COOPMAT2_GLSLC_SUPPORT",
+        "-DGGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT",
+        "-DGGML_VULKAN_BFLOAT16_GLSLC_SUPPORT",
+        "-DGGML_SCHED_MAX_COPIES=4",
+        "-Wno-unused-function",
+        "-Wno-unused-parameter",
+        "-Wno-missing-field-initializers",
+    ],
+    cppflags: [
+        "-fexceptions",
+    ],
+    include_dirs: [
+        "external/llama/include",
+        "external/llama/src",
+        "external/llama/ggml/include",
+        "external/llama/ggml/src",
+        "external/llama/ggml/src/ggml-vulkan",
+    ],
+    header_libs: [
+        "jni_headers",
+        "llama_vulkan_generated_headers",
+        "vulkan_headers",
+    ],
+    whole_static_libs: ["libllama"],
+    static_libs: [
+        "libggml",
+        "libggml_vulkan",
+        "libggml_cpu",
+        "libggml_cpu_c",
+        "libggml_base",
+        "libggml_base_c",
+    ],
+    shared_libs: [
+        "libdl",
+        "liblog",
+        "libvulkan",
+    ],
+}
