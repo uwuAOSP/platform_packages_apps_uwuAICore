@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -58,9 +59,13 @@ std::string g_cached_token_bytes;
 std::string g_last_error;
 std::string g_recent_llama_log;
 std::string g_status_log;
+std::string g_loaded_model_path;
 int g_previous_template_length = 0;
 int g_remaining_tokens = 0;
+int g_loaded_context_size = 0;
+int g_loaded_thread_count = 0;
 bool g_generation_active = false;
+bool g_using_vulkan = false;
 
 void llama_log_callback(ggml_log_level level, const char * text, void *);
 
@@ -324,6 +329,7 @@ void free_model_state() {
         g_model = nullptr;
     }
 
+    g_using_vulkan = false;
     reset_chat_state();
 }
 
@@ -472,7 +478,11 @@ std::string load_model_once(
     return {};
 }
 
-std::string decode_prompt(const std::string & prompt) {
+std::string decode_prompt(const std::string & prompt, bool * backend_failure = nullptr) {
+    if (backend_failure != nullptr) {
+        *backend_failure = false;
+    }
+
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
     const bool is_first = llama_memory_seq_pos_max(llama_get_memory(g_context), 0) == -1;
     const int32_t token_count = -llama_tokenize(
@@ -493,17 +503,76 @@ std::string decode_prompt(const std::string & prompt) {
     }
 
     llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
-    if (llama_decode(g_context, batch) != 0) {
-        return "llama_decode failed while processing prompt";
+    g_recent_llama_log.clear();
+    try {
+        if (llama_decode(g_context, batch) != 0) {
+            if (g_stop_requested.load()) {
+                return "prompt processing stopped";
+            }
+            if (backend_failure != nullptr) {
+                *backend_failure = g_using_vulkan;
+            }
+            return error_with_recent_llama_log("llama_decode failed while processing prompt");
+        }
+    } catch (const std::exception & error) {
+        if (backend_failure != nullptr) {
+            *backend_failure = g_using_vulkan;
+        }
+        append_recent_llama_log(error.what());
+        return error_with_recent_llama_log("prompt processing failed");
     }
     return {};
 }
 
 std::string decode_token(llama_token token) {
     llama_batch batch = llama_batch_get_one(&token, 1);
-    if (llama_decode(g_context, batch) != 0) {
-        return "llama_decode failed while generating token";
+    g_recent_llama_log.clear();
+    try {
+        if (llama_decode(g_context, batch) != 0) {
+            return error_with_recent_llama_log("llama_decode failed while generating token");
+        }
+    } catch (const std::exception & error) {
+        append_recent_llama_log(error.what());
+        return error_with_recent_llama_log("token generation failed");
     }
+    return {};
+}
+
+std::string fallback_to_cpu_for_prompt(const std::vector<ChatMessage> & messages) {
+    const std::string model_path = g_loaded_model_path;
+    const int context_size = g_loaded_context_size;
+    const int thread_count = g_loaded_thread_count;
+
+    free_model_state();
+    g_stop_requested.store(false);
+
+    const std::string load_error = load_model_once(
+            model_path, context_size, thread_count, make_model_params(false, 0));
+    if (!load_error.empty()) {
+        append_status_line("CPU fallback load failed: " + load_error);
+        free_model_state();
+        return "CPU fallback load failed: " + load_error;
+    }
+
+    append_model_device_status();
+    append_status_line("CPU fallback loaded; retrying prompt.");
+    g_messages = messages;
+    g_previous_template_length = 0;
+
+    const std::string formatted = apply_chat_template(true);
+    if (formatted.empty()) {
+        free_model_state();
+        return "CPU fallback failed to apply chat template";
+    }
+
+    const std::string decode_error = decode_prompt(formatted);
+    if (!decode_error.empty()) {
+        append_status_line("CPU prompt retry failed: " + decode_error);
+        free_model_state();
+        return "CPU prompt retry failed: " + decode_error;
+    }
+
+    append_status_line("Prompt resumed on CPU.");
     return {};
 }
 
@@ -526,6 +595,9 @@ Java_org_uwuaosp_aicore_LlamaNative_loadModel(
     free_model_state();
     g_stop_requested.store(false);
     g_status_log.clear();
+    g_loaded_model_path.clear();
+    g_loaded_context_size = 0;
+    g_loaded_thread_count = 0;
 
     const std::string path = to_string(env, model_path);
     if (path.empty()) {
@@ -534,6 +606,9 @@ Java_org_uwuaosp_aicore_LlamaNative_loadModel(
 
     const bool request_vulkan = use_vulkan == JNI_TRUE;
     const int requested_gpu_layers = static_cast<int>(gpu_layers);
+    g_loaded_model_path = path;
+    g_loaded_context_size = static_cast<int>(context_size);
+    g_loaded_thread_count = static_cast<int>(thread_count);
     bool should_load_cpu = !request_vulkan;
     initialize_backend(request_vulkan);
 
@@ -547,6 +622,7 @@ Java_org_uwuaosp_aicore_LlamaNative_loadModel(
             const std::string error = load_model_once(
                     path, context_size, thread_count, model_params);
             if (error.empty()) {
+                g_using_vulkan = llama_model_n_devices(g_model) > 0;
                 append_model_device_status();
                 return nullptr;
             }
@@ -573,6 +649,7 @@ Java_org_uwuaosp_aicore_LlamaNative_loadModel(
             free_model_state();
             return error_or_null(env, error);
         }
+        g_using_vulkan = false;
         append_model_device_status();
         return nullptr;
     }
@@ -610,8 +687,21 @@ Java_org_uwuaosp_aicore_LlamaNative_beginPrompt(
 
     const size_t start = std::min<size_t>(g_previous_template_length, formatted.size());
     const std::string prompt_delta = formatted.substr(start);
-    const std::string decode_error = decode_prompt(prompt_delta);
+    bool backend_failure = false;
+    const std::string decode_error = decode_prompt(prompt_delta, &backend_failure);
     if (!decode_error.empty()) {
+        if (backend_failure && g_using_vulkan) {
+            const std::vector<ChatMessage> messages = g_messages;
+            append_status_line("Vulkan prompt failed: " + decode_error);
+            append_status_line("Fallback to CPU.");
+            const std::string fallback_error = fallback_to_cpu_for_prompt(messages);
+            if (fallback_error.empty()) {
+                g_remaining_tokens = std::max(1, static_cast<int>(max_tokens));
+                g_generation_active = true;
+                return nullptr;
+            }
+            return error_or_null(env, fallback_error);
+        }
         g_messages.pop_back();
         return error_or_null(env, decode_error);
     }
@@ -695,7 +785,17 @@ Java_org_uwuaosp_aicore_LlamaNative_consumeLastError(JNIEnv * env, jobject) {
     return to_jstring(env, error);
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_uwuaosp_aicore_LlamaNative_isModelLoaded(JNIEnv *, jobject) {
+    return g_model != nullptr && g_context != nullptr && g_sampler != nullptr
+            ? JNI_TRUE
+            : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_org_uwuaosp_aicore_LlamaNative_unload(JNIEnv *, jobject) {
     free_model_state();
+    g_loaded_model_path.clear();
+    g_loaded_context_size = 0;
+    g_loaded_thread_count = 0;
 }
