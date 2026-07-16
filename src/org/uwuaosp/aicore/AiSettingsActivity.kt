@@ -158,6 +158,7 @@ private object LlamaNative {
     external fun requestStop()
     external fun consumeStatusLog(): String?
     external fun consumeLastError(): String?
+    external fun isModelLoaded(): Boolean
     external fun unload()
 }
 
@@ -341,20 +342,30 @@ private class AiInferenceController(
         val serial = operationSerial
         _state.update { it.copy(message = "", status = AiRunStatus.Generating) }
         appendLine("${context.getString(R.string.ai_log_user_prefix)}: $prompt")
-        appendRaw("${context.getString(R.string.ai_log_assistant_prefix)}: ")
 
         generationJob = scope.launch {
-            val beginError = withContext(nativeDispatcher) {
-                LlamaNative.beginPrompt(prompt, DEFAULT_MAX_TOKENS)
+            val (beginError, statusLog, modelLoaded) = withContext(nativeDispatcher) {
+                val error = LlamaNative.beginPrompt(prompt, DEFAULT_MAX_TOKENS)
+                Triple(
+                    error,
+                    LlamaNative.consumeStatusLog(),
+                    error == null || LlamaNative.isModelLoaded(),
+                )
             }
+            appendNativeStatusLog(statusLog)
             if (beginError != null) {
                 appendError(beginError)
                 if (serial == operationSerial) {
-                    _state.update { it.copy(status = AiRunStatus.Running) }
+                    _state.update {
+                        it.copy(
+                            status = if (modelLoaded) AiRunStatus.Running else AiRunStatus.Error,
+                        )
+                    }
                 }
                 return@launch
             }
 
+            appendRaw("${context.getString(R.string.ai_log_assistant_prefix)}: ")
             withContext(nativeDispatcher) {
                 while (isActive) {
                     val token = LlamaNative.nextToken() ?: break
