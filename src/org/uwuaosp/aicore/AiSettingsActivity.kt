@@ -16,12 +16,16 @@
 
 package org.uwuaosp.aicore
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.system.ErrnoException
+import android.system.Os
+import android.text.format.Formatter
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ScrollState
@@ -73,6 +77,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.android.settingslib.collapsingtoolbar.CollapsingToolbarBaseActivity
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
@@ -464,6 +469,8 @@ private class AiInferenceController(
     }
 
     private fun prepareLocalModelFile(uri: Uri, displayName: String): File {
+        ensureMemoryAvailable()
+
         val modelDir = File(context.filesDir, MODEL_DIR_NAME)
         if (!modelDir.exists() && !modelDir.mkdirs()) {
             throw IOException("failed to create ${modelDir.absolutePath}")
@@ -472,31 +479,65 @@ private class AiInferenceController(
         val modelName = sanitizeFileName(displayName)
         val target = File(modelDir, modelName)
         val expectedSize = queryFileSize(uri)
-        if (target.isFile && expectedSize != null && target.length() == expectedSize) {
-            return target
+        val usableSpace = modelDir.usableSpace
+        val copyBudget = (usableSpace - MIN_STORAGE_RESERVE_BYTES).coerceAtLeast(0L)
+        if (expectedSize != null && expectedSize > copyBudget) {
+            throw IOException(
+                context.getString(
+                    R.string.ai_error_insufficient_storage,
+                    Formatter.formatFileSize(context, expectedSize),
+                    Formatter.formatFileSize(context, copyBudget),
+                ),
+            )
         }
 
-        val temp = File(modelDir, "$modelName.tmp")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            temp.outputStream().use { output ->
-                input.copyTo(output, bufferSize = MODEL_COPY_BUFFER_SIZE)
+        // Always import the selected document again. A provider may replace a document without
+        // changing its display name or byte count, so name/size alone are not a safe cache key.
+        val temp = File.createTempFile(".$modelName.", ".tmp", modelDir)
+        var copiedBytes = 0L
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(temp).use { output ->
+                    val buffer = ByteArray(MODEL_COPY_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        copiedBytes += count
+                        if (copiedBytes > copyBudget) {
+                            throw IOException(
+                                context.getString(
+                                    R.string.ai_error_insufficient_storage,
+                                    Formatter.formatFileSize(context, copiedBytes),
+                                    Formatter.formatFileSize(context, copyBudget),
+                                ),
+                            )
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                    output.fd.sync()
+                }
+            } ?: throw IOException("failed to open model input stream")
+
+            if (expectedSize != null && copiedBytes != expectedSize) {
+                throw IOException(context.getString(R.string.ai_error_model_size_changed))
             }
-        } ?: throw IOException("failed to open model input stream")
+            if (!isGguf(temp)) {
+                throw IOException(context.getString(R.string.ai_log_invalid_model))
+            }
 
-        if (expectedSize != null && temp.length() != expectedSize) {
-            temp.delete()
-            throw IOException("copied model size mismatch")
+            // Both files are in the same private directory. POSIX rename atomically replaces the
+            // previous model, leaving it intact if copying or validation failed.
+            try {
+                Os.rename(temp.absolutePath, target.absolutePath)
+            } catch (error: ErrnoException) {
+                throw IOException(context.getString(R.string.ai_error_atomic_replace), error)
+            }
+            return target
+        } finally {
+            if (temp.exists()) {
+                temp.delete()
+            }
         }
-
-        if (target.exists() && !target.delete()) {
-            temp.delete()
-            throw IOException("failed to replace existing local model")
-        }
-        if (!temp.renameTo(target)) {
-            temp.copyTo(target, overwrite = true)
-            temp.delete()
-        }
-        return target
     }
 
     private fun queryFileSize(uri: Uri): Long? {
@@ -512,19 +553,44 @@ private class AiInferenceController(
 
     private fun sanitizeFileName(name: String): String {
         val sanitized = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        return sanitized.ifBlank { "model.gguf" }
+        return sanitized.take(MAX_MODEL_FILE_NAME_CHARS).ifBlank { "model.gguf" }
     }
 
     private fun isGguf(uri: Uri): Boolean {
         return try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 val magic = ByteArray(4)
-                input.read(magic) == 4 &&
-                    magic.contentEquals(byteArrayOf('G'.code.toByte(), 'G'.code.toByte(),
-                        'U'.code.toByte(), 'F'.code.toByte()))
+                input.read(magic) == 4 && magic.contentEquals(GGUF_MAGIC)
             } == true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun isGguf(file: File): Boolean {
+        return try {
+            file.inputStream().use { input ->
+                val magic = ByteArray(4)
+                input.read(magic) == 4 && magic.contentEquals(GGUF_MAGIC)
+            }
+        } catch (_: IOException) {
+            false
+        }
+    }
+
+    private fun ensureMemoryAvailable() {
+        val activityManager = context.getSystemService(ActivityManager::class.java) ?: return
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+        val requiredAvailableMemory =
+            maxOf(MIN_AVAILABLE_MEMORY_BYTES, memoryInfo.threshold * 2)
+        if (memoryInfo.lowMemory || memoryInfo.availMem < requiredAvailableMemory) {
+            throw IOException(
+                context.getString(
+                    R.string.ai_error_low_memory,
+                    Formatter.formatFileSize(context, memoryInfo.availMem),
+                ),
+            )
         }
     }
 
@@ -540,6 +606,16 @@ private class AiInferenceController(
         private const val LOG_FILE_NAME = "llama_run.log"
         private const val MODEL_DIR_NAME = "llama_models"
         private const val MODEL_COPY_BUFFER_SIZE = 1024 * 1024
+        private const val MAX_MODEL_FILE_NAME_CHARS = 120
+        private const val MIN_AVAILABLE_MEMORY_BYTES = 384L * 1024L * 1024L
+        private const val MIN_STORAGE_RESERVE_BYTES = 256L * 1024L * 1024L
+        private val GGUF_MAGIC =
+            byteArrayOf(
+                'G'.code.toByte(),
+                'G'.code.toByte(),
+                'U'.code.toByte(),
+                'F'.code.toByte(),
+            )
     }
 }
 

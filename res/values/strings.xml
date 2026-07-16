@@ -27,6 +27,10 @@
     <string name="ai_log_vulkan_requested">Vulkan requested.</string>
     <string name="ai_log_vulkan_disabled">Vulkan disabled; CPU backend selected.</string>
     <string name="ai_log_invalid_model">Selected file is not a GGUF model.</string>
+    <string name="ai_error_insufficient_storage">Not enough storage to import the model. Required: %1$s; available: %2$s.</string>
+    <string name="ai_error_low_memory">Not enough free memory to prepare the model (%1$s available). Close other apps and try again.</string>
+    <string name="ai_error_model_size_changed">The selected model changed while it was being copied. Select it again and retry.</string>
+    <string name="ai_error_atomic_replace">The local model could not be replaced safely. The previous copy was kept.</string>
     <string name="ai_log_error">Error: %1$s</string>
     <string name="ai_log_user_prefix">You</string>
     <string name="ai_log_assistant_prefix">Assistant</string>
