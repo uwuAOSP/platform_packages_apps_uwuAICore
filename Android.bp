@@ -14,6 +14,16 @@
 // limitations under the License.
 //
 
+java_library {
+    name: "uwu_ocr_aidl",
+    srcs: ["aidl/**/*.aidl"],
+    platform_apis: true,
+    aidl: {
+        local_include_dirs: ["aidl"],
+        include_dirs: ["frameworks/base/core/java"],
+    },
+}
+
 android_app {
     name: "uwuAICore",
 
@@ -27,7 +37,11 @@ android_app {
     system_ext_specific: true,
     certificate: "platform",
     privileged: true,
-    jni_libs: ["libuwu_aicore_llama_jni"],
+    use_embedded_native_libs: true,
+    jni_libs: [
+        "libuwu_aicore_llama_jni",
+        "libuwu_aicore_ocr_jni",
+    ],
 
     static_libs: [
         "androidx.activity_activity",
@@ -43,6 +57,7 @@ android_app {
         "kotlin-stdlib",
         "SettingsLib",
         "uwuComposeSettingsLib",
+        "uwu_ocr_aidl",
         "kotlinx_coroutines",
         "kotlinx_coroutines_android",
     ],
@@ -54,6 +69,63 @@ android_app {
         proguard_flags_files: ["proguard-rules.pro"],
         shrink_resources: true,
     },
+}
+
+cc_library_shared {
+    name: "libuwu_aicore_ocr_jni",
+    srcs: ["jni/uwu_ocr_jni.cpp"],
+    system_ext_specific: true,
+    compile_multilib: "64",
+    cpp_std: "c++17",
+    rtti: true,
+    lto: {
+        never: true,
+    },
+    cflags: [
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=600",
+        "-DGGML_USE_CPU",
+        "-DGGML_USE_VULKAN",
+        "-DGGML_VULKAN_COOPMAT_GLSLC_SUPPORT",
+        "-DGGML_VULKAN_COOPMAT2_GLSLC_SUPPORT",
+        "-DGGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT",
+        "-DGGML_VULKAN_BFLOAT16_GLSLC_SUPPORT",
+        "-DGGML_SCHED_MAX_COPIES=4",
+        "-Wno-unused-function",
+        "-Wno-unused-parameter",
+        "-Wno-missing-field-initializers",
+    ],
+    cppflags: ["-fexceptions"],
+    include_dirs: [
+        "external/llama/include",
+        "external/llama/src",
+        "external/llama/ggml/include",
+        "external/llama/ggml/src",
+        "external/llama/ggml/src/ggml-vulkan",
+        "external/llama/tools/mtmd",
+    ],
+    header_libs: [
+        "jni_headers",
+        "llama_vulkan_generated_headers",
+        "vulkan_headers",
+    ],
+    whole_static_libs: [
+        "libllama",
+        "libmtmd",
+    ],
+    static_libs: [
+        "libggml",
+        "libggml_vulkan",
+        "libggml_cpu",
+        "libggml_cpu_c",
+        "libggml_base",
+        "libggml_base_c",
+    ],
+    shared_libs: [
+        "libdl",
+        "liblog",
+        "libvulkan",
+    ],
 }
 
 cc_library_shared {
