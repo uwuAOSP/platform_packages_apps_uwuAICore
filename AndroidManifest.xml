@@ -18,6 +18,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.uwuaosp.aicore">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <permission
+        android:name="org.uwuaosp.aicore.permission.USE_OCR"
+        android:protectionLevel="signature" />
+
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_ai"
@@ -35,5 +41,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".ocr.OcrService"
+            android:exported="true"
+            android:permission="org.uwuaosp.aicore.permission.USE_OCR"
+            android:process=":ocr">
+            <intent-filter>
+                <action android:name="org.uwuaosp.aicore.action.BIND_OCR" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

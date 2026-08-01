@@ -15,6 +15,7 @@
 #
 
 -keep class org.uwuaosp.aicore.LlamaNative { *; }
+-keep class org.uwuaosp.aicore.ocr.** { *; }
 -keepclasseswithmembernames class * {
     native <methods>;
 }
