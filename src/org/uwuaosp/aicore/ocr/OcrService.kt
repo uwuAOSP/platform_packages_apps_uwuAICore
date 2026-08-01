@@ -29,10 +29,10 @@ import android.os.RemoteCallbackList
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
@@ -56,10 +56,17 @@ private object OcrNative {
     external fun recognize(
         modelPath: String,
         mmprojPath: String,
-        imageFd: Int,
+        imagePath: String,
         threadCount: Int,
         useVulkan: Boolean,
     ): String
+
+    external fun prewarm(
+        modelPath: String,
+        mmprojPath: String,
+        threadCount: Int,
+        useVulkan: Boolean,
+    ): Boolean
 
     external fun requestCancel()
     external fun unload()
@@ -78,6 +85,10 @@ class OcrService : Service() {
     private var shuttingDown = false
     @Volatile
     private var nativeLoaded = false
+    @Volatile
+    private var prewarmJob: Job? = null
+    @Volatile
+    private var vulkanUnavailable = false
     private lateinit var modelStore: OcrModelStore
 
     private val unloadRunnable = Runnable {
@@ -155,18 +166,24 @@ class OcrService : Service() {
                 start = CoroutineStart.LAZY,
             ) {
                 notifyProgress(requestId, 0)
-                Log.i(TAG, "Recognition started: id=$requestId backend=${if (useVulkan) "vulkan" else "cpu"}")
+                val effectiveVulkan = useVulkan && !vulkanUnavailable
+                Log.i(
+                    TAG,
+                    "Recognition started: id=$requestId backend=${if (effectiveVulkan) "vulkan" else "cpu"}",
+                )
+                var inputFile: File? = null
                 try {
                     currentCoroutineContext().ensureActive()
                     activeRequestId = requestId
+                    inputFile = copyInput(image, requestId)
                     OcrNative.ensureLoaded()
                     nativeLoaded = true
                     val result = OcrNative.recognize(
                         modelStore.modelFile.absolutePath,
                         modelStore.mmprojFile.absolutePath,
-                        image.fd,
+                        inputFile.absolutePath,
                         recommendedThreadCount(),
-                        useVulkan,
+                        effectiveVulkan,
                     )
                     notifyProgress(requestId, 100)
                     notifyResult(requestId, result)
@@ -181,6 +198,7 @@ class OcrService : Service() {
                         )
                     }
                 } finally {
+                    inputFile?.delete()
                     if (activeRequestId == requestId) {
                         activeRequestId = NO_REQUEST
                     }
@@ -220,7 +238,11 @@ class OcrService : Service() {
     }
 
     override fun onBind(intent: Intent): IBinder? {
-        return if (intent.action == BIND_ACTION) binder else null
+        if (intent.action != BIND_ACTION) return null
+        if (intent.getBooleanExtra(EXTRA_PREWARM_OCR, false)) {
+            prewarmModel(intent.getBooleanExtra(EXTRA_USE_VULKAN, false))
+        }
+        return binder
     }
 
     override fun onTrimMemory(level: Int) {
@@ -254,6 +276,44 @@ class OcrService : Service() {
                 .onFailure { error -> Log.w(TAG, "Could not cancel OCR", error) }
         }
         requests.values.forEach(Job::cancel)
+    }
+
+    private fun prewarmModel(useVulkan: Boolean) {
+        if (
+            modelStore.snapshot.status != ModelStatus.READY ||
+            nativeLoaded ||
+            prewarmJob?.isActive == true
+        ) {
+            return
+        }
+        mainHandler.removeCallbacks(unloadRunnable)
+        val job = serviceScope.launch(nativeDispatcher) {
+            try {
+                OcrNative.ensureLoaded()
+                val loadedWithVulkan = OcrNative.prewarm(
+                    modelStore.modelFile.absolutePath,
+                    modelStore.mmprojFile.absolutePath,
+                    recommendedThreadCount(),
+                    useVulkan,
+                )
+                if (useVulkan && !loadedWithVulkan) {
+                    vulkanUnavailable = true
+                }
+                nativeLoaded = true
+                Log.i(TAG, "OCR model prewarmed with ${if (loadedWithVulkan) "Vulkan" else "CPU"}")
+            } catch (error: Throwable) {
+                Log.w(TAG, "Could not prewarm OCR model", error)
+            }
+        }
+        prewarmJob = job
+        job.invokeOnCompletion {
+            if (prewarmJob === job) {
+                prewarmJob = null
+            }
+            if (!shuttingDown) {
+                scheduleUnload(MODEL_IDLE_TIMEOUT_MS)
+            }
+        }
     }
 
     private fun scheduleUnload(delayMillis: Long) {
@@ -307,12 +367,29 @@ class OcrService : Service() {
     }
 
     private fun recommendedThreadCount(): Int {
-        return max(2, Runtime.getRuntime().availableProcessors() / 2)
+        return Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+    }
+
+    private fun copyInput(image: ParcelFileDescriptor, requestId: Long): File {
+        val file = File(cacheDir, "ocr-input-$requestId-${System.nanoTime()}.png")
+        try {
+            ParcelFileDescriptor.AutoCloseInputStream(image).use { input ->
+                FileOutputStream(file).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            return file
+        } catch (error: Throwable) {
+            file.delete()
+            throw error
+        }
     }
 
     private companion object {
         const val TAG = "uwuOcrService"
         const val BIND_ACTION = "org.uwuaosp.aicore.action.BIND_OCR"
+        const val EXTRA_PREWARM_OCR = "org.uwuaosp.prism.extra.PREWARM_OCR"
+        const val EXTRA_USE_VULKAN = "org.uwuaosp.prism.extra.USE_VULKAN"
         const val MODEL_IDLE_TIMEOUT_MS = 120_000L
         const val NO_REQUEST = -1L
         const val ERROR_MODEL_MISSING = 1

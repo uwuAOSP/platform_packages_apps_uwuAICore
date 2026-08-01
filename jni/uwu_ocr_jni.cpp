@@ -19,7 +19,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <sched.h>
 #include <string>
 #include <vector>
 
@@ -37,6 +40,10 @@
 
 namespace {
 
+constexpr int kOcrImageMaxTokens = 512;
+constexpr int kOcrMaxOutputTokens = 1024;
+constexpr int kOcrContextTokens = 2048;
+
 std::atomic_bool g_backend_initialized{false};
 std::atomic_bool g_cancel_requested{false};
 
@@ -46,6 +53,64 @@ std::string g_model_path;
 std::string g_mmproj_path;
 bool g_loaded_with_vulkan = false;
 int g_loaded_threads = 0;
+
+class ScopedHighPerformanceAffinity {
+  public:
+    ScopedHighPerformanceAffinity() {
+        if (sched_getaffinity(0, sizeof(previous_), &previous_) != 0) {
+            return;
+        }
+
+        struct CpuFrequency {
+            int index;
+            long frequency;
+        };
+        std::vector<CpuFrequency> cores;
+        for (int index = 0; index < CPU_SETSIZE; ++index) {
+            if (!CPU_ISSET(index, &previous_)) {
+                continue;
+            }
+            std::ifstream frequency_file(
+                    "/sys/devices/system/cpu/cpu" + std::to_string(index) +
+                    "/cpufreq/cpuinfo_max_freq");
+            long frequency = 0;
+            if (!(frequency_file >> frequency) || frequency <= 0) {
+                continue;
+            }
+            cores.push_back({index, frequency});
+        }
+        if (cores.size() < 2) {
+            return;
+        }
+        std::sort(
+                cores.begin(),
+                cores.end(),
+                [](const CpuFrequency & first, const CpuFrequency & second) {
+                    return first.frequency > second.frequency;
+                });
+
+        cpu_set_t preferred;
+        CPU_ZERO(&preferred);
+        const size_t core_count = std::min<size_t>(4, cores.size());
+        for (size_t index = 0; index < core_count; ++index) {
+            CPU_SET(cores[index].index, &preferred);
+        }
+        if (sched_setaffinity(0, sizeof(preferred), &preferred) == 0) {
+            active_ = true;
+            LOGI("OCR CPU affinity set to %zu performance cores", core_count);
+        }
+    }
+
+    ~ScopedHighPerformanceAffinity() {
+        if (active_) {
+            sched_setaffinity(0, sizeof(previous_), &previous_);
+        }
+    }
+
+  private:
+    cpu_set_t previous_ = {};
+    bool active_ = false;
+};
 
 std::string to_string(JNIEnv * env, jstring value) {
     if (value == nullptr) {
@@ -177,6 +242,7 @@ std::string ensure_model_loaded(
     mtmd_params.n_threads = thread_count;
     mtmd_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     mtmd_params.warmup = false;
+    mtmd_params.image_max_tokens = kOcrImageMaxTokens;
     mtmd_params.progress_callback = load_progress;
     g_mtmd = mtmd_init_from_file(mmproj_path.c_str(), g_model, mtmd_params);
     if (g_mtmd == nullptr || !mtmd_support_vision(g_mtmd)) {
@@ -273,10 +339,12 @@ std::string recognize_once(
     llama_sampler * sampler = nullptr;
     mtmd_input_chunks * chunks = nullptr;
     std::string result;
+    const auto request_started = std::chrono::steady_clock::now();
+    const ScopedHighPerformanceAffinity high_performance_affinity;
 
     do {
         llama_context_params context_params = llama_context_default_params();
-        context_params.n_ctx = 12288;
+        context_params.n_ctx = kOcrContextTokens;
         context_params.n_batch = 512;
         context_params.n_ubatch = 512;
         context_params.n_threads = thread_count;
@@ -322,10 +390,12 @@ std::string recognize_once(
                     : "failed to encode OCR image";
             break;
         }
+        const auto encoded_at = std::chrono::steady_clock::now();
 
         sampler = llama_sampler_init_greedy();
         const llama_vocab * vocab = llama_model_get_vocab(g_model);
-        for (int generated = 0; generated < 2048; ++generated) {
+        int generated = 0;
+        for (; generated < kOcrMaxOutputTokens; ++generated) {
             if (g_cancel_requested.load()) {
                 *error = "OCR request cancelled";
                 break;
@@ -345,6 +415,17 @@ std::string recognize_once(
                 break;
             }
         }
+        const auto generated_at = std::chrono::steady_clock::now();
+        const auto encode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                encoded_at - request_started).count();
+        const auto generate_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                generated_at - encoded_at).count();
+        LOGI(
+                "OCR completed: image_max_tokens=%d encoded_ms=%lld generated_tokens=%d generated_ms=%lld",
+                kOcrImageMaxTokens,
+                static_cast<long long>(encode_ms),
+                generated,
+                static_cast<long long>(generate_ms));
     } while (false);
 
     if (chunks != nullptr) {
@@ -379,17 +460,17 @@ Java_org_uwuaosp_aicore_ocr_OcrNative_recognize(
         jobject,
         jstring model_path,
         jstring mmproj_path,
-        jint image_fd,
+        jstring image_path,
         jint thread_count,
         jboolean use_vulkan) {
     g_cancel_requested.store(false);
     const std::string model = to_string(env, model_path);
     const std::string mmproj = to_string(env, mmproj_path);
-    if (model.empty() || mmproj.empty() || image_fd < 0) {
+    const std::string image = to_string(env, image_path);
+    if (model.empty() || mmproj.empty() || image.empty()) {
         return throw_error(env, "invalid OCR input");
     }
 
-    const std::string image = "/proc/self/fd/" + std::to_string(image_fd);
     const int threads = std::max(1, static_cast<int>(thread_count));
     std::string error;
     std::string result = recognize_once(
@@ -420,6 +501,39 @@ Java_org_uwuaosp_aicore_ocr_OcrNative_recognize(
         return throw_error(env, error);
     }
     return env->NewStringUTF(result.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_uwuaosp_aicore_ocr_OcrNative_prewarm(
+        JNIEnv * env,
+        jobject,
+        jstring model_path,
+        jstring mmproj_path,
+        jint thread_count,
+        jboolean use_vulkan) {
+    g_cancel_requested.store(false);
+    const std::string model = to_string(env, model_path);
+    const std::string mmproj = to_string(env, mmproj_path);
+    if (model.empty() || mmproj.empty()) {
+        throw_error(env, "invalid OCR model path");
+        return JNI_FALSE;
+    }
+
+    const int threads = std::max(1, static_cast<int>(thread_count));
+    const bool request_vulkan = use_vulkan == JNI_TRUE;
+    const ScopedHighPerformanceAffinity high_performance_affinity;
+    std::string error = ensure_model_loaded(model, mmproj, threads, request_vulkan);
+    if (!error.empty() && request_vulkan && !g_cancel_requested.load()) {
+        LOGW("Vulkan OCR prewarm failed; retrying on CPU: %s", error.c_str());
+        free_loaded_model();
+        error = ensure_model_loaded(model, mmproj, threads, false);
+    }
+    if (!error.empty()) {
+        free_loaded_model();
+        throw_error(env, error);
+        return JNI_FALSE;
+    }
+    return g_loaded_with_vulkan ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
