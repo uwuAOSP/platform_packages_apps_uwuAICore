@@ -426,7 +426,7 @@ void finish_generation() {
 
 llama_model_params make_model_params(bool use_vulkan, int gpu_layers) {
     llama_model_params model_params = llama_model_default_params();
-    model_params.use_mmap = true;
+    model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
     if (use_vulkan) {
         model_params.n_gpu_layers = gpu_layers;
     } else {

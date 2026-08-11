@@ -196,7 +196,6 @@ void free_loaded_model() {
 
 llama_model_params make_model_params(bool use_vulkan) {
     llama_model_params params = llama_model_default_params();
-    params.use_mmap = true;
     params.progress_callback = load_progress;
     if (use_vulkan) {
         params.n_gpu_layers = -1;
