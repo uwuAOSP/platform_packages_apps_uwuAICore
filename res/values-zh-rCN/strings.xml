@@ -40,4 +40,9 @@
     <string name="ai_action_run_model">运行模型</string>
     <string name="ai_action_stop_model">停止模型</string>
     <string name="ai_action_send">发送</string>
+    <string name="ocr_download_channel">OCR 模型下载</string>
+    <string name="ocr_download_title">正在下载 uwuPrism-OCR 模型</string>
+    <string name="ocr_download_progress">%1$d%% · %2$s / %3$s</string>
+    <string name="ocr_download_verifying">正在校验 OCR 模型</string>
+    <string name="ocr_download_cancel">取消下载</string>
 </resources>

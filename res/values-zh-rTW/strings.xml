@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (C) 2026 The uwuAOSP Project; SPDX-License-Identifier: Apache-2.0 -->
+<resources>
+    <string name="ocr_download_channel">OCR 模型下載</string>
+    <string name="ocr_download_title">正在下載 uwuPrism-OCR 模型</string>
+    <string name="ocr_download_progress">%1$d%% · %2$s / %3$s</string>
+    <string name="ocr_download_verifying">正在驗證 OCR 模型</string>
+    <string name="ocr_download_cancel">取消下載</string>
+</resources>
