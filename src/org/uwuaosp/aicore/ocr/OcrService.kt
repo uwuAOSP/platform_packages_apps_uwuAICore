@@ -17,15 +17,23 @@
 package org.uwuaosp.aicore.ocr
 
 import android.app.DownloadManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.RemoteCallbackList
+import android.os.SystemClock
+import android.text.format.Formatter
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -45,6 +53,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.uwuaosp.aicore.R
 
 private object OcrNative {
     init {
@@ -90,6 +99,11 @@ class OcrService : Service() {
     @Volatile
     private var vulkanUnavailable = false
     private lateinit var modelStore: OcrModelStore
+    private var storeResumed = false
+    private var downloadForeground = false
+    private var handlingDownloadCommand = false
+    private var lastNotificationTime = 0L
+    private var lastNotificationStatus = ModelStatus.MISSING
 
     private val unloadRunnable = Runnable {
         if (requests.isEmpty() && nativeLoaded) {
@@ -129,7 +143,14 @@ class OcrService : Service() {
         override fun getDownloadTotalBytes(): Long = modelStore.snapshot.totalBytes
 
         override fun startDownload() {
-            mainHandler.post(modelStore::startDownload)
+            mainHandler.post {
+                runCatching {
+                    startForegroundService(Intent(this@OcrService, OcrService::class.java)
+                        .setAction(ACTION_DOWNLOAD))
+                }.onFailure { error ->
+                    notifyModelError(error.message ?: "Could not start model download")
+                }
+            }
         }
 
         override fun cancelDownload() {
@@ -234,11 +255,63 @@ class OcrService : Service() {
     override fun onCreate() {
         super.onCreate()
         modelStore = OcrModelStore(this, ::notifyModelState, ::notifyModelError)
-        modelStore.resume()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        handlingDownloadCommand = true
+        try {
+            if (intent?.action != ACTION_CANCEL_DOWNLOAD) {
+                startDownloadForeground(modelStore.snapshot)
+            }
+            resumeModelStore()
+            when (intent?.action) {
+                ACTION_DOWNLOAD -> modelStore.startDownload()
+                ACTION_CANCEL_DOWNLOAD -> modelStore.cancelDownload()
+                // A sticky restart resumes the saved DownloadManager requests, not new downloads.
+            }
+        } catch (error: Exception) {
+            // Preserve existing DownloadManager requests if foreground promotion is rejected.
+            Log.e(TAG, "Could not start OCR download service", error)
+            notifyModelError(error.message ?: "Could not start model download")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            downloadForeground = false
+            stopSelf()
+        } finally {
+            handlingDownloadCommand = false
+            updateDownloadForeground(modelStore.snapshot, force = true)
+        }
+        return if (downloadForeground && modelStore.snapshot.isTransferActive) {
+            START_STICKY
+        } else START_NOT_STICKY
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // DownloadManager owns the transfer and can continue after the dataSync time limit.
+        // Do not cancel or erase its saved request IDs here.
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        downloadForeground = false
+        stopSelf()
+        Log.w(TAG, "OCR download foreground service timed out; transfer retained")
+    }
+
+    private fun resumeModelStore() {
+        if (!storeResumed) {
+            storeResumed = true
+            modelStore.resume()
+        }
     }
 
     override fun onBind(intent: Intent): IBinder? {
         if (intent.action != BIND_ACTION) return null
+        resumeModelStore()
+        if (modelStore.snapshot.isTransferActive && !downloadForeground) {
+            runCatching {
+                startForegroundService(Intent(this, OcrService::class.java)
+                    .setAction(ACTION_RESUME_DOWNLOAD))
+            }.onFailure { error ->
+                Log.w(TAG, "Could not restore OCR download notification", error)
+            }
+        }
         if (intent.getBooleanExtra(EXTRA_PREWARM_OCR, false)) {
             prewarmModel(intent.getBooleanExtra(EXTRA_USE_VULKAN, false))
         }
@@ -322,6 +395,9 @@ class OcrService : Service() {
     }
 
     private fun notifyModelState(snapshot: ModelSnapshot) {
+        if (!handlingDownloadCommand) {
+            updateDownloadForeground(snapshot)
+        }
         broadcast { callback ->
             callback.onModelStateChanged(
                 snapshot.status,
@@ -329,6 +405,82 @@ class OcrService : Service() {
                 snapshot.totalBytes,
             )
         }
+    }
+
+    private fun startDownloadForeground(snapshot: ModelSnapshot) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(
+            DOWNLOAD_CHANNEL,
+            getString(R.string.ocr_download_channel),
+            NotificationManager.IMPORTANCE_LOW,
+        ))
+        startForeground(
+            DOWNLOAD_NOTIFICATION_ID,
+            downloadNotification(snapshot),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
+        downloadForeground = true
+    }
+
+    private fun updateDownloadForeground(snapshot: ModelSnapshot, force: Boolean = false) {
+        if (!snapshot.isTransferActive) {
+            if (downloadForeground) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                downloadForeground = false
+            }
+            stopSelf()
+            return
+        }
+        if (!downloadForeground) return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && snapshot.status == lastNotificationStatus &&
+            now - lastNotificationTime < NOTIFICATION_INTERVAL_MS) {
+            return
+        }
+        lastNotificationTime = now
+        lastNotificationStatus = snapshot.status
+        getSystemService(NotificationManager::class.java)
+            .notify(DOWNLOAD_NOTIFICATION_ID, downloadNotification(snapshot))
+    }
+
+    private fun downloadNotification(snapshot: ModelSnapshot): Notification {
+        val verifying = snapshot.status == ModelStatus.VERIFYING
+        val percent = if (snapshot.totalBytes > 0) {
+            (snapshot.downloadedBytes.coerceIn(0, snapshot.totalBytes) * 100 /
+                snapshot.totalBytes).toInt()
+        } else 0
+        val cancel = PendingIntent.getService(
+            this, 0,
+            Intent(this, OcrService::class.java).setAction(ACTION_CANCEL_DOWNLOAD),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent().setComponent(ComponentName(
+                "org.uwuaosp.prism", "org.uwuaosp.prism.PrismSettingsActivity",
+            )),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(this, DOWNLOAD_CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(getString(if (verifying) {
+                R.string.ocr_download_verifying
+            } else R.string.ocr_download_title))
+            .setContentText(getString(
+                R.string.ocr_download_progress, percent,
+                Formatter.formatShortFileSize(this, snapshot.downloadedBytes),
+                Formatter.formatShortFileSize(this, snapshot.totalBytes),
+            ))
+            .setProgress(100, percent, verifying || snapshot.totalBytes <= 0)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(Notification.CATEGORY_PROGRESS)
+            .setContentIntent(open)
+            .addAction(Notification.Action.Builder(
+                null, getString(R.string.ocr_download_cancel), cancel,
+            ).build())
+            .build()
     }
 
     private fun notifyModelError(message: String) {
@@ -387,6 +539,12 @@ class OcrService : Service() {
 
     private companion object {
         const val TAG = "uwuOcrService"
+        const val ACTION_DOWNLOAD = "org.uwuaosp.aicore.action.DOWNLOAD_OCR_MODEL"
+        const val ACTION_RESUME_DOWNLOAD = "org.uwuaosp.aicore.action.RESUME_OCR_MODEL"
+        const val ACTION_CANCEL_DOWNLOAD = "org.uwuaosp.aicore.action.CANCEL_OCR_MODEL"
+        const val DOWNLOAD_CHANNEL = "ocr_model_downloads"
+        const val DOWNLOAD_NOTIFICATION_ID = 1
+        const val NOTIFICATION_INTERVAL_MS = 1_000L
         const val BIND_ACTION = "org.uwuaosp.aicore.action.BIND_OCR"
         const val EXTRA_PREWARM_OCR = "org.uwuaosp.prism.extra.PREWARM_OCR"
         const val EXTRA_USE_VULKAN = "org.uwuaosp.prism.extra.USE_VULKAN"
@@ -411,7 +569,10 @@ private data class ModelSnapshot(
     val status: Int,
     val downloadedBytes: Long,
     val totalBytes: Long,
-)
+) {
+    val isTransferActive: Boolean
+        get() = status == ModelStatus.DOWNLOADING || status == ModelStatus.VERIFYING
+}
 
 private data class ModelAsset(
     val fileName: String,
@@ -482,6 +643,12 @@ private class OcrModelStore(
         try {
             modelId = enqueue(MODEL_ASSET)
             mmprojId = enqueue(MMPROJ_ASSET)
+            // Persist recovery IDs before publishing a started transfer or returning to the UI.
+            check(preferences.edit()
+                .putLong(PREF_MODEL_DOWNLOAD_ID, modelId)
+                .putLong(PREF_MMPROJ_DOWNLOAD_ID, mmprojId)
+                .putBoolean(PREF_VERIFIED, false)
+                .commit()) { "Could not save model download requests" }
         } catch (error: Throwable) {
             val startedIds = listOf(modelId, mmprojId).filter { it >= 0 }
             if (startedIds.isNotEmpty()) {
@@ -490,11 +657,6 @@ private class OcrModelStore(
             failDownload(error.message ?: "Could not start model download")
             return
         }
-        preferences.edit()
-            .putLong(PREF_MODEL_DOWNLOAD_ID, modelId)
-            .putLong(PREF_MMPROJ_DOWNLOAD_ID, mmprojId)
-            .putBoolean(PREF_VERIFIED, false)
-            .apply()
         updateSnapshot(ModelStatus.DOWNLOADING, 0)
         handler.removeCallbacks(pollRunnable)
         handler.post(pollRunnable)
@@ -551,7 +713,7 @@ private class OcrModelStore(
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
             .setNotificationVisibility(
-                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                DownloadManager.Request.VISIBILITY_HIDDEN,
             )
             .setDestinationInExternalFilesDir(
                 context,

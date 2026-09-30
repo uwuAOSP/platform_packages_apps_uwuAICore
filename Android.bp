@@ -37,6 +37,7 @@ android_app {
     system_ext_specific: true,
     certificate: "platform",
     privileged: true,
+    required: ["default_permissions_uwu_aicore"],
     use_embedded_native_libs: true,
     jni_libs: [
         "libuwu_aicore_llama_jni",
@@ -69,6 +70,14 @@ android_app {
         proguard_flags_files: ["proguard-rules.pro"],
         shrink_resources: true,
     },
+}
+
+prebuilt_etc {
+    name: "default_permissions_uwu_aicore",
+    src: "default-permissions.xml",
+    filename: "default-permissions-uwu-aicore.xml",
+    sub_dir: "default-permissions",
+    system_ext_specific: true,
 }
 
 cc_library_shared {

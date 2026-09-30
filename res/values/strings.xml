@@ -40,4 +40,9 @@
     <string name="ai_action_run_model">Run model</string>
     <string name="ai_action_stop_model">Stop model</string>
     <string name="ai_action_send">Send</string>
+    <string name="ocr_download_channel">OCR model downloads</string>
+    <string name="ocr_download_title">Downloading uwuPrism-OCR model</string>
+    <string name="ocr_download_progress">%1$d%% · %2$s / %3$s</string>
+    <string name="ocr_download_verifying">Verifying OCR model</string>
+    <string name="ocr_download_cancel">Cancel download</string>
 </resources>
