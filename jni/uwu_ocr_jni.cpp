@@ -258,35 +258,13 @@ std::string ensure_model_loaded(
 }
 
 std::string apply_chat_template() {
-    const std::string content = std::string(mtmd_get_marker(g_mtmd)) + "\nOCR";
-    const llama_chat_message message = {
-        /* .role = */ "user",
-        /* .content = */ content.c_str(),
-    };
-    const char * tmpl = llama_model_chat_template(g_model, nullptr);
-    int32_t required = llama_chat_apply_template(
-            tmpl,
-            &message,
-            1,
-            true,
-            nullptr,
-            0);
-    if (required <= 0) {
+    const char * marker = mtmd_get_marker(g_mtmd);
+    if (marker == nullptr || marker[0] == '\0') {
         return {};
     }
-
-    std::vector<char> output(static_cast<size_t>(required) + 1);
-    const int32_t written = llama_chat_apply_template(
-            tmpl,
-            &message,
-            1,
-            true,
-            output.data(),
-            static_cast<int32_t>(output.size()));
-    if (written <= 0) {
-        return {};
-    }
-    return std::string(output.data(), static_cast<size_t>(written));
+    // 固定模型使用GLM-OCR协议，图片边界由mtmd添加，保留一个媒体占位符
+    return std::string("[gMASK]<sop><|user|>\n") + marker +
+            "Text Recognition:<|assistant|>\n";
 }
 
 std::string token_to_piece(const llama_vocab * vocab, llama_token token) {
