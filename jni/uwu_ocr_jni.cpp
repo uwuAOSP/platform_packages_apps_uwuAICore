@@ -340,11 +340,11 @@ std::string recognize_once(
             break;
         }
 
-        mtmd_input_text input = {
-            /* .text = */ prompt.c_str(),
-            /* .add_special = */ true,
-            /* .parse_special = */ true,
-        };
+        mtmd_input_text input = {};
+        input.text = prompt.data();
+        input.text_len = prompt.size();
+        input.add_special = true;
+        input.parse_special = true;
         chunks = mtmd_input_chunks_init();
         const mtmd_bitmap * bitmaps[] = {bitmap_wrapper.bitmap};
         if (mtmd_tokenize(g_mtmd, chunks, &input, bitmaps, 1) != 0) {
