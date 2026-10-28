@@ -20,7 +20,6 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.system.ErrnoException
@@ -30,7 +29,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,10 +57,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -95,7 +89,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import org.uwuaosp.compose.settingslib.rememberSettingsTypography
+import org.uwuaosp.compose.framework.theme.SettingsTheme
 
 class AiSettingsActivity : CollapsingToolbarBaseActivity() {
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -621,25 +615,7 @@ private class AiInferenceController(
 
 @Composable
 private fun AiSettingsTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val darkTheme = isSystemInDarkTheme()
-    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        if (darkTheme) {
-            dynamicDarkColorScheme(context)
-        } else {
-            dynamicLightColorScheme(context)
-        }
-    } else if (darkTheme) {
-        darkColorScheme()
-    } else {
-        lightColorScheme()
-    }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = rememberSettingsTypography(),
-        content = content,
-    )
+    SettingsTheme(content = content)
 }
 
 @Composable
