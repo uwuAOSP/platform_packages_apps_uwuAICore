@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package org.uwuaosp.aicore
 
 import android.app.ActivityManager
@@ -25,20 +27,20 @@ import android.provider.OpenableColumns
 import android.system.ErrnoException
 import android.system.Os
 import android.text.format.Formatter
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -49,13 +51,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -64,12 +67,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.android.settingslib.collapsingtoolbar.CollapsingToolbarBaseActivity
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -90,26 +91,30 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.uwuaosp.compose.framework.theme.SettingsTheme
+import org.uwuaosp.compose.widget.preference.SettingsPreferenceGroup
+import org.uwuaosp.compose.widget.preference.SwitchPreferenceRow
+import org.uwuaosp.compose.widget.scaffold.SettingsAppBarScaffold
+import org.uwuaosp.compose.widget.ui.SettingsContent
 
-class AiSettingsActivity : CollapsingToolbarBaseActivity() {
+class AiSettingsActivity : ComponentActivity() {
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var controller: AiInferenceController
 
-    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri ?: return@registerForActivityResult
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-        } catch (_: SecurityException) {
+    private val modelPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            uri ?: return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (_: SecurityException) {}
+            controller.selectModel(uri)
         }
-        controller.selectModel(uri)
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setTitle(R.string.ai_settings_title)
+        enableEdgeToEdge()
 
         controller = AiInferenceController(this, activityScope)
         setContent {
@@ -127,6 +132,7 @@ class AiSettingsActivity : CollapsingToolbarBaseActivity() {
                     onVulkanChange = controller::setUseVulkan,
                     onMessageChange = controller::updateMessage,
                     onSendClick = controller::sendMessage,
+                    onNavigateUp = ::finish,
                 )
             }
         }
@@ -625,82 +631,57 @@ private fun AiSettingsScreen(
     onVulkanChange: (Boolean) -> Unit,
     onMessageChange: (String) -> Unit,
     onSendClick: () -> Unit,
+    onNavigateUp: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        AiBackendControls(
-            state = state,
-            onVulkanChange = onVulkanChange,
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        AiLogPanel(
-            state = state,
-            onActionClick = onActionClick,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        AiMessageBar(
-            state = state,
-            onMessageChange = onMessageChange,
-            onSendClick = onSendClick,
-        )
+    SettingsAppBarScaffold(
+        title = stringResource(R.string.ai_settings_title),
+        showBackButton = true,
+        onNavigateUp = onNavigateUp,
+    ) { padding ->
+        SettingsContent(
+            modifier =
+                Modifier.fillMaxSize()
+                    .padding(padding)
+                    .consumeWindowInsets(padding)
+                    .imePadding()
+                    .padding(16.dp)
+        ) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SettingsPreferenceGroup {
+                    item {
+                        SwitchPreferenceRow(
+                            title = stringResource(R.string.ai_vulkan_gpu),
+                            summary = "",
+                            showSummary = false,
+                            checked = state.useVulkan,
+                            onCheckedChange = onVulkanChange,
+                            enabled = state.canChangeBackend,
+                        )
+                    }
+                }
+                AiLogPanel(state, onActionClick, Modifier.fillMaxWidth().weight(1f))
+                AiMessageBar(state, onMessageChange, onSendClick)
+            }
+        }
     }
 }
 
 @Composable
-private fun AiBackendControls(
-    state: AiUiState,
-    onVulkanChange: (Boolean) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = stringResource(R.string.ai_vulkan_gpu),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Switch(
-            checked = state.useVulkan,
-            onCheckedChange = onVulkanChange,
-            enabled = state.canChangeBackend,
-        )
-    }
-}
-
-@Composable
-private fun AiLogPanel(
-    state: AiUiState,
-    onActionClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
+private fun AiLogPanel(state: AiUiState, onActionClick: () -> Unit, modifier: Modifier = Modifier) {
     val scrollState = rememberScrollState()
-    LaunchedEffect(state.logText) {
-        scrollState.animateScrollTo(scrollState.maxValue)
-    }
+    LaunchedEffect(state.logText) { scrollState.animateScrollTo(scrollState.maxValue) }
 
     Box(modifier = modifier) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
             contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ) {
             LogText(
                 logText = state.logText,
                 scrollState = scrollState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(14.dp),
+                modifier = Modifier.fillMaxSize().padding(14.dp),
             )
         }
         FloatingActionButton(
@@ -709,13 +690,7 @@ private fun AiLogPanel(
                     onActionClick()
                 }
             },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(14.dp)
-                .size(56.dp),
-            shape = MaterialTheme.shapes.large,
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(14.dp).size(56.dp),
         ) {
             Icon(
                 imageVector = state.action.icon,
@@ -756,9 +731,7 @@ private fun AiMessageBar(
         OutlinedTextField(
             value = state.message,
             onValueChange = onMessageChange,
-            modifier = Modifier
-                .weight(1f)
-                .heightIn(min = 56.dp, max = 112.dp),
+            modifier = Modifier.weight(1f).heightIn(min = 56.dp, max = 112.dp),
             enabled = state.status == AiRunStatus.Running,
             shape = MaterialTheme.shapes.large,
             placeholder = {
@@ -775,7 +748,7 @@ private fun AiMessageBar(
             onClick = onSendClick,
             enabled = state.canSend,
             modifier = Modifier.size(56.dp),
-            shape = MaterialTheme.shapes.large,
+            shapes = IconButtonDefaults.shapes(),
         ) {
             Icon(
                 imageVector = Icons.Default.Send,
@@ -786,15 +759,17 @@ private fun AiMessageBar(
 }
 
 private val AiAction.icon: ImageVector
-    get() = when (this) {
-        AiAction.SelectModel -> Icons.Default.Add
-        AiAction.RunModel -> Icons.Default.PlayArrow
-        AiAction.StopModel -> Icons.Default.Pause
-    }
+    get() =
+        when (this) {
+            AiAction.SelectModel -> Icons.Default.Add
+            AiAction.RunModel -> Icons.Default.PlayArrow
+            AiAction.StopModel -> Icons.Default.Pause
+        }
 
 private val AiAction.contentDescriptionRes: Int
-    get() = when (this) {
-        AiAction.SelectModel -> R.string.ai_action_select_model
-        AiAction.RunModel -> R.string.ai_action_run_model
-        AiAction.StopModel -> R.string.ai_action_stop_model
-    }
+    get() =
+        when (this) {
+            AiAction.SelectModel -> R.string.ai_action_select_model
+            AiAction.RunModel -> R.string.ai_action_run_model
+            AiAction.StopModel -> R.string.ai_action_stop_model
+        }
